@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Vibration } from 'react-native';
+import { Audio } from 'expo-av';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { Accelerometer } from 'expo-sensors';
 
 const words = [
@@ -11,91 +13,171 @@ const words = [
   'Rainforest'
 ];
 
-export default function GameScreen() {
-  const [currentWord, setCurrentWord] = useState(getRandomWord());
-  const [score, setScore] = useState(0);
-  const [timeLeft, setTimeLeft] = useState(60);
-  const [subscription, setSubscription] = useState(null);
-  const [lastTilt, setLastTilt] = useState(null);
+export default function GameScreen({ navigation }) {
+  const [word, setWord] = useState('');
+  const [timer, setTimer] = useState(60);
+  const [background, setBackground] = useState('blue');
+  const [message, setMessage] = useState('');
+  const [countdownAudio, setCountdownAudio] = useState();
+  const [isActive, setIsActive] = useState(false);
+  const [correctCount, setCorrectCount] = useState(0);
+  const [passCount, setPassCount] = useState(0);
+  const accelerometerSubscription = useRef(null);
+  const lastShakeTime = useRef(0);
 
-  // helper to pick random words
-  function getRandomWord() {
-    return words[Math.floor(Math.random() * words.length)];
-  }
+  const getNewWord = () => {
+    const random = words[Math.floor(Math.random() * words.length)];
+    setWord(random);
+  };
 
-  // start the countdown timer
+  const flashScreen = async (type) => {
+    let color = '#fff';
+    let text = '';
+    let soundFile;
+
+    if (type === 'pass') {
+      color = '#ff4d4d';
+      text = 'PASS';
+      soundFile = require('../assets/pass.wav');
+      setPassCount(prev => prev + 1);
+    } else {
+      color = '#4CAF50';
+      text = 'CORRECT';
+      soundFile = require('../assets/correct.wav');
+      setCorrectCount(prev => prev + 1);
+    }
+
+    setBackground(color);
+    setMessage(text);
+
+    const { sound } = await Audio.Sound.createAsync(soundFile);
+    await sound.playAsync();
+
+    setTimeout(() => {
+      setBackground('blue');
+      setMessage('');
+      getNewWord();
+    }, 1000);
+  };
+
+  const handleTilt = ({ x, y }) => {
+    const now = Date.now();
+    if (now - lastShakeTime.current < 1000) return;
+
+    if (y < -0.8) {
+      flashScreen('correct');
+      lastShakeTime.current = now;
+    } else if (y > 0.8) {
+      flashScreen('pass');
+      lastShakeTime.current = now;
+    }
+  };
+
   useEffect(() => {
-    const timer = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          Accelerometer.removeAllListeners(); //stop timer
-          return 0;
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+  }, []);
+
+  useEffect(() => {
+    getNewWord();
+    setIsActive(true);
+
+    const countdown = setInterval(() => {
+      setTimer(prev => {
+        if (prev === 1) {
+          clearInterval(countdown);
+          Vibration.vibrate(1000);
+          navigation.replace('SummaryScreen', {
+            correct: correctCount,
+            pass: passCount,
+          });
         }
         return prev - 1;
       });
     }, 1000);
 
-    return () => clearInterval(timer);
+    return () => clearInterval(countdown);
   }, []);
 
-  //setup accelerometer
   useEffect(() => {
-    Accelerometer.setUpdateInterval(300);
-    const sub = Accelerometer.addListener(data => {
-      const { y } = data;
+    if (timer <= 10 && timer > 0) {
+      playCountdownBeep();
+    }
+  }, [timer]);
 
-      //Tilt forward = score 
-      if (y > 0.7 && lastTilt !== 'forward') {
-        setScore(score + 1);
-        setCurrentWord(getRandomWord());
-        setLastTilt('forward');
-      }
-
-      // Tilt back = skip 
-      else if (y < -0.7 && lastTilt !== 'back') {
-        setCurrentWord(getRandomWord());
-        setLastTilt('back');
-      }
-    });
-
-    setSubscription(sub);
+  useEffect(() => {
+    accelerometerSubscription.current = Accelerometer.addListener(handleTilt);
+    Accelerometer.setUpdateInterval(200);
 
     return () => {
-      sub && sub.remove();
-      setSubscription(null);
+      if (accelerometerSubscription.current) {
+        accelerometerSubscription.current.remove();
+      }
     };
-  }, [score, lastTilt]);
+  }, []);
 
+  const playCountdownBeep = async () => {
+    const { sound } = await Audio.Sound.createAsync(
+      require('../assets/countdown-beep.wav')
+    );
+    setCountdownAudio(sound);
+    await sound.playAsync();
+  };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.timer}>{timeLeft}s</Text>
-      <Text style={styles.word}>{currentWord}</Text>
-      <Text style={styles.score}>Score: {score}</Text>
+    <View style={[styles.container, { backgroundColor: background }]}>
+      {message ? (
+        <Text style={styles.countdown}>{message}</Text>
+      ) : (
+        <>
+          <Text style={styles.timer}>{timer}</Text>
+          <Text style={styles.word}>{word}</Text>
+          <View style={styles.scoreContainer}>
+            <Text style={styles.score}>✅ {correctCount}</Text>
+            <Text style={styles.score}>❌ {passCount}</Text>
+          </View>
+        </>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flex:1,
-    backgroundColor: '#1a1a1a',
-    alignItems: 'center',
+    flex: 1,
+    backgroundColor: '#1c66b0ff',
     justifyContent: 'center',
+    alignItems: 'center',
   },
   timer: {
-    fontSize: 30,
-    color: '#00FFAA',
-    marginBottom: 20,
+    fontSize: 60,
+    color: '#444',
+    fontWeight: 'bold',
+    position: 'absolute',
+    top: 60,
   },
   word: {
-    fontSize: 48,
+    fontSize: 120,
+    color: 'white',
     fontWeight: 'bold',
-    color: '#fff',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  countdown: {
+    fontSize: 100,
+    fontWeight: 'bold',
+    color: 'white',
+    textAlign: 'center',
+  },
+  scoreContainer: {
+    flexDirection: 'row',
+    position: 'absolute',
+    bottom: 50,
+    justifyContent: 'space-between',
+    width: '60%',
   },
   score: {
-    fontSize: 24,
-    color: '#FFA500',
+    fontSize: 40,
+    color: '#fff',
+    fontWeight: 'bold',
   },
 });
