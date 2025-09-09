@@ -1,68 +1,77 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Vibration } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Vibration, StatusBar, Animated } from 'react-native';
+import { Accelerometer } from 'expo-sensors';
 import { Audio } from 'expo-av';
 import * as ScreenOrientation from 'expo-screen-orientation';
-import { Accelerometer } from 'expo-sensors';
+import * as NavigationBar from 'expo-navigation-bar';
+import { AntDesign } from '@expo/vector-icons';
 
 const words = [
-  'Elephant',
-  'Basketball',
+  'Tiger',
+  'Laptop',
   'Pineapple',
-  'Computer',
-  'Airplane',
-  'Rainforest'
+  'Helicopter',
+  'Dancer',
+  'Doctor',
+  'Volcano',
+  'Robot',
 ];
 
 export default function GameScreen({ navigation }) {
   const [word, setWord] = useState('');
   const [timer, setTimer] = useState(60);
-  const [background, setBackground] = useState('blue');
-  const [message, setMessage] = useState('');
-  const [countdownAudio, setCountdownAudio] = useState();
-  const [isActive, setIsActive] = useState(false);
   const [correctCount, setCorrectCount] = useState(0);
-  const [passCount, setPassCount] = useState(0);
-  const accelerometerSubscription = useRef(null);
+  const [flashColor, setFlashColor] = useState(null);
+  const [flashMessage, setFlashMessage] = useState('');
   const lastShakeTime = useRef(0);
+  const soundRef = useRef(null);
 
-  const getNewWord = () => {
-    const random = words[Math.floor(Math.random() * words.length)];
-    setWord(random);
+  const flashOpacity = useRef(new Animated.Value(0)).current;
+
+  const getRandomWord = () => {
+    let newWord;
+    do {
+      newWord = words[Math.floor(Math.random() * words.length)];
+    } while (newWord === word);
+    setWord(newWord);
   };
 
-  const flashScreen = async (type) => {
-    let color = '#fff';
-    let text = '';
-    let soundFile;
+  const playSound = async (file) => {
+    if (soundRef.current) {
+      await soundRef.current.unloadAsync();
+    }
+    const { sound } = await Audio.Sound.createAsync(file);
+    soundRef.current = sound;
+    await sound.playAsync();
+  };
 
-    if (type === 'pass') {
-      color = '#ff4d4d';
-      text = 'PASS';
-      soundFile = require('../assets/pass.wav');
-      setPassCount(prev => prev + 1);
-    } else {
-      color = '#4CAF50';
-      text = 'CORRECT';
-      soundFile = require('../assets/correct.wav');
-      setCorrectCount(prev => prev + 1);
+  const flashScreen = (type) => {
+    if (type === 'correct') {
+      setCorrectCount((prev) => prev + 1);
+      setFlashColor('#2ecc71');
+      setFlashMessage('CORRECT');
+      playSound(require('../assets/correct.wav'));
+    } else if (type === 'pass') {
+      setFlashColor('#e74c3c');
+      setFlashMessage('PASS');
+      playSound(require('../assets/pass.wav'));
     }
 
-    setBackground(color);
-    setMessage(text);
+    Vibration.vibrate(300);
 
-    const { sound } = await Audio.Sound.createAsync(soundFile);
-    await sound.playAsync();
-
-    setTimeout(() => {
-      setBackground('blue');
-      setMessage('');
-      getNewWord();
-    }, 1000);
+    Animated.sequence([
+      Animated.timing(flashOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.timing(flashOpacity, { toValue: 0, duration: 800, delay: 400, useNativeDriver: true}),
+    ]).start(() => {
+      setFlashColor(null);
+      setFlashMessage('');
+      getRandomWord();
+    });
   };
 
-  const handleTilt = ({ x, y }) => {
+  const handleTilt = ({ y }) => {
     const now = Date.now();
-    if (now - lastShakeTime.current < 1000) return;
+    if (now - lastShakeTime.current < 1200) return;
 
     if (y < -0.8) {
       flashScreen('correct');
@@ -74,69 +83,76 @@ export default function GameScreen({ navigation }) {
   };
 
   useEffect(() => {
+    // Force fullscreen landscape
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-  }, []);
+    NavigationBar.setVisibilityAsync('hidden');
+    NavigationBar.setBehaviorAsync('overlay-swipe');
+    getRandomWord();
 
-  useEffect(() => {
-    getNewWord();
-    setIsActive(true);
-
-    const countdown = setInterval(() => {
-      setTimer(prev => {
-        if (prev === 1) {
-          clearInterval(countdown);
-          Vibration.vibrate(1000);
-          navigation.replace('SummaryScreen', {
-            correct: correctCount,
-            pass: passCount,
-          });
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(countdown);
-  }, []);
-
-  useEffect(() => {
-    if (timer <= 10 && timer > 0) {
-      playCountdownBeep();
-    }
-  }, [timer]);
-
-  useEffect(() => {
-    accelerometerSubscription.current = Accelerometer.addListener(handleTilt);
-    Accelerometer.setUpdateInterval(200);
+    Accelerometer.setUpdateInterval(300);
+    const subscription = Accelerometer.addListener(handleTilt);
 
     return () => {
-      if (accelerometerSubscription.current) {
-        accelerometerSubscription.current.remove();
+      subscription.remove();
+      if (soundRef.current) {
+        soundRef.current.unloadAsync();
       }
     };
   }, []);
 
-  const playCountdownBeep = async () => {
-    const { sound } = await Audio.Sound.createAsync(
-      require('../assets/countdown-beep.wav')
-    );
-    setCountdownAudio(sound);
-    await sound.playAsync();
-  };
+  useEffect(() => {
+    if (timer > 0) {
+      const interval = setInterval(() => setTimer((prev) => prev - 1), 1000);
+      return () => clearInterval(interval);
+    } else {
+      navigation.replace('End', { score: correctCount });
+    }
+  }, [timer]);
+
+  const ringSize = 100;
+  const ringWidth = 8;
 
   return (
-    <View style={[styles.container, { backgroundColor: background }]}>
-      {message ? (
-        <Text style={styles.countdown}>{message}</Text>
-      ) : (
-        <>
-          <Text style={styles.timer}>{timer}</Text>
+    <View style={[styles.container, { backgroundColor: flashColor || '#6a1b9a' }]}>
+      {/* Hide status bar for true fullscreen */}
+      <StatusBar hidden />
+
+      {/* Back Arrow */}
+      <TouchableOpacity style={styles.backArrow} onPress={() => navigation.goBack()}>
+        <AntDesign name="arrowleft" size={28} color="#fff" />
+      </TouchableOpacity>
+
+      {/* Timer */}
+      <View style={styles.timerWrapper}>
+        <View
+          style={[
+            styles.ring,
+            {
+              width: ringSize,
+              height: ringSize,
+              borderRadius: ringSize / 2,
+              borderWidth: ringWidth,
+            },
+          ]}
+        />
+        <Text style={styles.timerText}>{timer}s</Text>
+      </View>
+
+      {/* Word in Center */}
+      <View style={styles.wordContainer}>
+        {flashMessage ? (
+          <Text style={styles.flashText}>{flashMessage}</Text>
+        ) : timer > 0 ? (
           <Text style={styles.word}>{word}</Text>
-          <View style={styles.scoreContainer}>
-            <Text style={styles.score}>✅ {correctCount}</Text>
-            <Text style={styles.score}>❌ {passCount}</Text>
-          </View>
-        </>
-      )}
+        ) : (
+          <Text style={styles.word}>Time is up!</Text>
+        )}
+      </View>
+
+      {/* Correct Count at Bottom */}
+      <View style={styles.scoreContainer}>
+        <Text style={styles.score}>{correctCount} correct</Text>
+      </View>
     </View>
   );
 }
@@ -144,40 +160,57 @@ export default function GameScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1c66b0ff',
-    justifyContent: 'center',
+    backgroundColor: '#6a1b9a',
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  timer: {
-    fontSize: 60,
-    color: '#444',
-    fontWeight: 'bold',
+  backArrow: {
     position: 'absolute',
-    top: 60,
+    top: 40,
+    left: 20,
+    zIndex: 10,
+  },
+  timerWrapper: {
+    position: 'absolute',
+    top: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ring: {
+    position: 'absolute',
+    borderColor: '#fff',
+  },
+  timerText: {
+    fontSize: 26,
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  wordContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   word: {
-    fontSize: 120,
-    color: 'white',
+    fontSize: 64,
     fontWeight: 'bold',
-    marginBottom: 20,
+    color: '#fff',
     textAlign: 'center',
   },
-  countdown: {
-    fontSize: 100,
+  flashText: {
+    fontSize: 72,
     fontWeight: 'bold',
-    color: 'white',
+    color: '#fff',
     textAlign: 'center',
   },
   scoreContainer: {
-    flexDirection: 'row',
     position: 'absolute',
-    bottom: 50,
-    justifyContent: 'space-between',
-    width: '60%',
+    bottom: 40,
+    alignItems: 'center',
   },
   score: {
-    fontSize: 40,
-    color: '#fff',
+    fontSize: 32,
     fontWeight: 'bold',
+    color: '#fff',
   },
 });
